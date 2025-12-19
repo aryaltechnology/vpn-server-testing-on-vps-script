@@ -7,3 +7,5 @@
 .dart_tool/
 build/
 pubspec.lock
+.envdev
+.envprod

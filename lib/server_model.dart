@@ -13,7 +13,7 @@ class VpnServerModel {
   String city;
   String country;
   String serverType;
-  
+
   // ✅ Credentials
   String username;
   String password;
@@ -21,6 +21,8 @@ class VpnServerModel {
   // Connection Metrics
   int ping;
   int downloadSpeed;
+
+  int score;
 
   VpnServerModel({
     this.id,
@@ -39,36 +41,34 @@ class VpnServerModel {
     this.password = '', // Default empty
     this.ping = 0,
     this.downloadSpeed = 0,
+    this.score = 0,
   });
 
   factory VpnServerModel.fromJson(Map<String, dynamic> json) {
     // Ensure the config field is decoded properly if it's a string
-      var configData = json['config'];
+    var configData = json['config'];
 
-    
-        // If the config field is a string, decode it into a Map
-        if (configData is String) {
-          if (configData == "" || configData.isEmpty) {
-            configData = "{}";
-          }
-          configData = jsonDecode(configData); // Decode the string into a Map
-        }
-        if (json['provider'] == 'vpngate' &&
-            configData['openvpnConfig'] is String) {
-          try {
-            String base64Config = configData['openvpnConfig']
-                .trim(); // Remove extra spaces
-            base64Config = base64.normalize(base64Config); // Fix padding issues
-            configData['openvpnConfig'] =
-                utf8.decode(base64.decode(base64Config));
-          } catch (e) {
-            throw FormatException("Failed to decode OpenVPN config: $e");
-          }
-        }
-      
+    // If the config field is a string, decode it into a Map
+    if (configData is String) {
+      if (configData == "" || configData.isEmpty) {
+        configData = "{}";
+      }
+      configData = jsonDecode(configData); // Decode the string into a Map
+    }
+    if (json['provider'] == 'vpngate' &&
+        configData['openvpnConfig'] is String) {
+      try {
+        String base64Config = configData['openvpnConfig']
+            .trim(); // Remove extra spaces
+        base64Config = base64.normalize(base64Config); // Fix padding issues
+        configData['openvpnConfig'] = utf8.decode(base64.decode(base64Config));
+      } catch (e) {
+        throw FormatException("Failed to decode OpenVPN config: $e");
+      }
+    }
 
     return VpnServerModel(
-      id: json['_id'], 
+      id: json['_id'],
       serverName: json['serverName'] ?? '',
       provider: json['provider'],
       protocol: json['protocol'] ?? 'OpenVPN',
@@ -80,14 +80,15 @@ class VpnServerModel {
       city: json['city'] ?? '',
       country: json['country'] ?? '',
       serverType: json['serverType'] ?? 'FREE',
-      
+
       // ✅ Map Credentials
       username: json['username'] ?? '',
       password: json['password'] ?? '',
-      
+
       // Flatten connection info
       downloadSpeed: json['connectionInfo']?['bandwidth']?['download'] ?? 0,
-      ping: 0, 
+      ping: 0,
+      score: 0,
     );
   }
 
@@ -98,10 +99,7 @@ class VpnServerModel {
       "serverType": serverType,
       "status": status,
       "connectionInfo": {
-        "bandwidth": {
-          "download": downloadSpeed,
-          "upload": downloadSpeed
-        }
+        "bandwidth": {"download": downloadSpeed, "upload": downloadSpeed},
       },
     };
   }

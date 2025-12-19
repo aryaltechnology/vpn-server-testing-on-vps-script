@@ -1,0 +1,43 @@
+name: Deploy VPS Tester
+
+on:
+  push:
+    branches:
+      - development
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: SSH Remote Commands
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.VPS_HOST }}
+        username: ${{ secrets.VPS_USER }}
+        key: ${{ secrets.VPS_SSH_KEY }}
+        envs: PROD_ENV
+        script: |
+          # 1. Go to your manually created folder
+          cd /root/vpn-server-tester/development
+          
+          # 2. Update Code
+          echo "📥 Pulling latest code..."
+          git pull origin main
+          
+          # 3. Inject Secrets (Update .env)
+          echo "$PROD_ENV" > .env
+          
+          # 4. Build
+          echo "🔨 Compiling..."
+          dart pub get
+          dart compile exe bin/server.dart -o vpn_tester
+          
+          # 5. Restart Service
+          # Uses restart || start (just in case it's not running yet)
+          echo "🚀 Restarting PM2..."
+          pm2 restart vpn-tester-dev || pm2 start ./vpn_tester --name "vpn-tester-dev"
+          pm2 save
+
+      env:
+        PROD_ENV: ${{ secrets.DEV_ENV_FILE }}
