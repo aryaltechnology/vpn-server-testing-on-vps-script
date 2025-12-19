@@ -26,27 +26,27 @@ jobs:
     # 3. Create Remote Directory (If not exists)
     - name: Ensure Remote Directory Exists
       run: |
-        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VPS_USER}}@${{ secrets.VPS_IP }} "mkdir -p /root/vpn-server-tester/development"
+        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VPS_USER}}@${{ secrets.VPS_HOST }} "mkdir -p /root/vpn-server-tester/development"
 
     # 4. Copy Files (SCP)
     - name: Copy Files to VPS
       run: |
         echo "📂 Copying files to VPS..."
         # Copy everything recursively (-r) to the development folder
-        scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }}:/root/vpn-server-tester/development/
+        scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/vpn-server-tester/development/
 
     # 5. Inject .env (Using DEV_ENV_FILE secret)
     - name: Inject .env file
       run: |
         echo "💉 Injecting .env..."
         # Takes the Secret from GitHub and writes it to .env on the VPS
-        echo "${{ secrets.DEV_ENV_FILE }}" | ssh -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }} "cat > /root/vpn-server-tester/development/.env"
+        echo "${{ secrets.DEV_ENV_FILE }}" | ssh -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cat > /root/vpn-server-tester/development/.env"
 
     # 6. Build & Restart on VPS
     - name: Remote Build and Restart
       run: |
         echo "🚀 Connecting to VPS to build..."
-        ssh -t -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_IP }} << 'EOF'
+        ssh -t -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
           
           # Go to the development folder
           cd /root/vpn-server-tester/development
