@@ -23,14 +23,14 @@ class ScannerLogic {
       List<VpnServerModel> servers = await ApiService.fetchAllServers();
       print("📋 Loaded ${servers.length} servers.");
 
-      List<VpnServerModel> updatesBuffer = [];
+      List<VpnServerModel> updatesBuffer = [];  
       List<String> deletesBuffer = [];
       Map<VpnServerModel, TestResult> testResults = {};
 
       
 
       // 2. Loop through servers
-      for (var server in servers.take(10).toList()) {
+      for (var server in servers.toList()) {
         try {
           // Patch ciphers as before
           Map<String, dynamic> openvpnConfig = jsonDecode(jsonEncode(server.config));

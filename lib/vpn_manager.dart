@@ -5,7 +5,7 @@ import 'dart:convert';
 class TestResult {
   final bool success;
   final int speedMbps;
-  final double pingMs; // Added ping in milliseconds
+  final double pingMs;
   TestResult(this.success, this.speedMbps, this.pingMs);
 }
 
@@ -16,7 +16,6 @@ class VpnManager {
     String username = '',
     String password = '',
   }) async {
-    // 1. PRE CLEAN
     await _forceKillOpenVpn();
 
     final File configFile = File('temp.ovpn');
@@ -24,12 +23,17 @@ class VpnManager {
 
     bool hasAuth = username.isNotEmpty && password.isNotEmpty;
     Process? openVpnProcess;
+
     bool ovpnConnected = false;
     bool authFailed = false;
 
     try {
-      // 2. Write config & auth
+      // Write config & auth
       await configFile.writeAsString(configContent);
+
+      await authFile.writeAsString(
+        hasAuth ? '$username\n$password' : 'vpn\nvpn',
+      );
 
       List<String> args = [
         '--config', 'temp.ovpn',
@@ -39,106 +43,98 @@ class VpnManager {
         '--persist-tun',
         '--connect-retry-max', '1',
         '--script-security', '2',
-        '--redirect-gateway', 'def1',
+
+        // 🚫 DO NOT REDIRECT GATEWAY (THIS BREAKS SSH)
+        // '--redirect-gateway', 'def1',
+
+        '--auth-user-pass', 'vpn_auth.txt',
+        '--verb', '3',
       ];
 
-      if (hasAuth) {
-        await authFile.writeAsString('$username\n$password');
-      } else {
-        await authFile.writeAsString('vpn\nvpn');
-      }
-      args.addAll(['--auth-user-pass', 'vpn_auth.txt']);
-
-      print("🔌 Connecting to Target Server: $ip ...");
+      print("🔌 Connecting to VPN server: $ip");
 
       String openVpnPath = await _resolveOpenVpnPath();
-      print("   🛠 Using OpenVPN at: $openVpnPath");
+      print("🛠 OpenVPN path: $openVpnPath");
 
-      // 3. Start OpenVPN
-      openVpnProcess = await Process.start('sudo', [openVpnPath, ...args]);
+      openVpnProcess = await Process.start(
+        'sudo',
+        [openVpnPath, ...args],
+      );
 
-      // 4. Listen logs
+      // Listen stdout
       openVpnProcess.stdout.transform(utf8.decoder).listen((data) {
         if (data.contains('Initialization Sequence Completed')) {
           ovpnConnected = true;
-          print("   [OVPN] Tunnel established");
+          print("✅ VPN tunnel established");
         }
 
         if (data.contains('AUTH_FAILED')) {
           authFailed = true;
-          print("   [OVPN] AUTH_FAILED detected");
+          print("❌ AUTH_FAILED");
         }
 
-        if (data.contains('Exiting') || data.contains('Error')) {
-          print("   [OVPN] ${data.trim()}");
+        if (data.contains('Exiting') || data.contains('ERROR')) {
+          print("[OVPN] ${data.trim()}");
         }
       });
 
       openVpnProcess.stderr.transform(utf8.decoder).listen((data) {
-        print("   [OVPN ERR] ${data.trim()}");
+        print("[OVPN ERR] ${data.trim()}");
       });
 
-      // 5. Wait for interface creation
-      String? activeInterface = await _waitForAnyInterface(15);
-      if (activeInterface == null || authFailed) {
-        print("   ❌ VPN connection failed (auth or interface)");
-        return TestResult(false, 0,0);
+      // Wait for tunnel interface
+      String? iface = await _waitForAnyInterface(15);
+      if (iface == null || authFailed) {
+        print("❌ VPN interface not created");
+        return TestResult(false, 0, 0);
       }
 
-      print("   🔗 Interface detected: $activeInterface");
+      print("🔗 Interface detected: $iface");
 
-      // 6. Wait for IP
       if (Platform.isLinux) {
-        bool hasIp = await _waitForIpAddress(activeInterface, 20);
+        bool hasIp = await _waitForIpAddress(iface, 20);
         if (!hasIp) {
-          print("   ❌ Linux: tun interface has NO IP");
-          return TestResult(false, 0,0);
+          print("❌ Interface has no IP");
+          return TestResult(false, 0, 0);
         }
       } else {
         await Future.delayed(const Duration(seconds: 3));
       }
 
-      // 7. WAIT for OpenVPN initialization
-      bool connected = false;
+      // Wait for OpenVPN completion
       for (int i = 0; i < 20; i++) {
-        if (ovpnConnected) {
-          connected = true;
-          break;
-        }
+        if (ovpnConnected) break;
         await Future.delayed(const Duration(seconds: 1));
       }
 
-      if (!connected) {
-        print("   ❌ OpenVPN did not complete initialization");
-        return TestResult(false, 0,0);
+      if (!ovpnConnected) {
+        print("❌ OpenVPN did not initialize");
+        return TestResult(false, 0, 0);
       }
 
-      print("   🌍 Verifying Internet Access...");
-      String? visibleIp = await _getPublicIp(activeInterface);
-      if (visibleIp == null) {
-        print("   ❌ Connected but no internet access");
-        return TestResult(false, 0,0);
+      // Verify internet via VPN tunnel
+      print("🌍 Verifying VPN exit IP...");
+      String? exitIp = await _getPublicIp(iface);
+      if (exitIp == null) {
+        print("❌ No internet over VPN");
+        return TestResult(false, 0, 0);
       }
 
-      print("   ✅ Connected! Exit IP: $visibleIp");
+      print("✅ VPN Exit IP: $exitIp");
 
-      // 8. Speed test (macOS fix: do NOT bind to interface)
-    // ---------------- Reliable speed test (10 MB) ----------------
-      print("  🚀 Testing Speed (HTTP Download, 10 MB)...");
+      // Speed test
+      print("🚀 Speed test...");
+      final speed = await testSpeed('https://proof.ovh.net/files/1Mb.dat');
 
-      // Hetzner provides smaller test files too: 10 MB
-      final url = 'https://proof.ovh.net/files/1Mb.dat';
-      final speed = await testSpeed(url);
-       // 9. Ping test
-      print("  📶 Testing Ping to target IP...");
+      // Ping test
+      print("📶 Ping test...");
       final pingMs = await testPing(ip);
-      //log
-      print("  ✅ Ping: ${pingMs.toStringAsFixed(2)} ms");
-      return TestResult(true, speed,pingMs);
-      
+      print("✅ Ping: ${pingMs.toStringAsFixed(2)} ms");
+
+      return TestResult(true, speed, pingMs);
     } catch (e) {
-      print("   ⚠️ Exception: $e");
-      return TestResult(false, 0,0);
+      print("⚠️ Exception: $e");
+      return TestResult(false, 0, 0);
     } finally {
       openVpnProcess?.kill();
       await _forceKillOpenVpn();
@@ -146,61 +142,55 @@ class VpnManager {
     }
   }
 
-  // ---------------- Ping Test ----------------
+  // ---------------- SPEED ----------------
+  static Future<int> testSpeed(String url) async {
+    final client = HttpClient();
+    int bytes = 0;
+
+    try {
+      final sw = Stopwatch()..start();
+      final req = await client.getUrl(Uri.parse(url));
+      final res = await req.close();
+
+      await for (final chunk in res) {
+        bytes += chunk.length;
+      }
+
+      sw.stop();
+      double seconds = sw.elapsedMilliseconds / 1000;
+      if (seconds < 0.1) seconds = 0.1;
+
+      int mbps = ((bytes * 8) / (seconds * 1000000)).round();
+      print("✅ Speed: $mbps Mbps");
+      return mbps;
+    } catch (e) {
+      print("⚠️ Speed failed: $e");
+      return 0;
+    } finally {
+      client.close();
+    }
+  }
+
+  // ---------------- PING ----------------
   static Future<double> testPing(String ip, {int count = 3}) async {
     try {
       final result = await Process.run(
         'ping',
-        Platform.isMacOS ? ['-c', '$count', ip] : ['-n', '$count', ip],
+        Platform.isMacOS ? ['-c', '$count', ip] : ['-c', '$count', ip],
       );
 
       if (result.exitCode != 0) return double.infinity;
 
       final output = result.stdout.toString();
-      final regex = RegExp(r'avg = ([0-9.]+)ms| = [0-9.]+/([0-9.]+)/[0-9.]+/[0-9.]+ ms');
+      final regex = RegExp(r' = [0-9.]+/([0-9.]+)/');
       final match = regex.firstMatch(output);
-      if (match != null) {
-        final avg = match.group(1) ?? match.group(2);
-        if (avg != null) return double.tryParse(avg) ?? double.infinity;
-      }
-      return double.infinity;
+      return match != null
+          ? double.tryParse(match.group(1)!) ?? double.infinity
+          : double.infinity;
     } catch (_) {
       return double.infinity;
     }
   }
-
-static Future<int> testSpeed(String testUrl) async {
-  final client = HttpClient();
-  int bytesReceived = 0;
-
-  try {
-    final stopwatch = Stopwatch()..start();
-    final request = await client.getUrl(Uri.parse(testUrl));
-    final response = await request.close();
-
-    await for (final chunk in response) {
-      bytesReceived += chunk.length;
-    }
-
-    stopwatch.stop();
-    double seconds = stopwatch.elapsedMilliseconds / 1000;
-    if (seconds < 0.1) seconds = 0.1;
-
-    int speedMbps = ((bytesReceived * 8) / (seconds * 1000000)).round();
-    print("  ✅ Speed: $speedMbps Mbps");
-    return speedMbps;
-  } catch (e) {
-    print("  ⚠️ Speed test failed: $e");
-    return 0;
-  } finally {
-    client.close();
-  }
-}
-
-
-
-
-
 
   // ---------------- HELPERS ----------------
   static Future<String> _resolveOpenVpnPath() async {
@@ -209,12 +199,35 @@ static Future<int> testSpeed(String testUrl) async {
       '/usr/local/sbin/openvpn',
       '/usr/sbin/openvpn',
       '/usr/bin/openvpn',
-      '/sbin/openvpn',
     ];
     for (final p in paths) {
       if (await File(p).exists()) return p;
     }
     return 'openvpn';
+  }
+
+  static Future<void> _forceKillOpenVpn() async {
+    try {
+      await Process.run(
+        'sudo',
+        ['pkill', 'openvpn'],
+      ).timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => ProcessResult(0, 0, '', ''),
+      );
+    } catch (_) {}
+    await Future.delayed(const Duration(seconds: 1));
+  }
+
+  static Future<void> _cleanupFiles() async {
+    try {
+      if (await File('temp.ovpn').exists()) {
+        await File('temp.ovpn').delete();
+      }
+      if (await File('vpn_auth.txt').exists()) {
+        await File('vpn_auth.txt').delete();
+      }
+    } catch (_) {}
   }
 
   static Future<bool> _waitForIpAddress(String iface, int timeout) async {
@@ -229,9 +242,9 @@ static Future<int> testSpeed(String testUrl) async {
   static Future<String?> _getPublicIp(String iface) async {
     for (int i = 0; i < 3; i++) {
       try {
-        final args = Platform.isMacOS
-            ? ['-s', '-4', 'https://api.ipify.org']
-            : ['--interface', iface, '--max-time', '6', '-4', '-s', 'https://api.ipify.org'];
+        final args = Platform.isLinux
+            ? ['--interface', iface, '-s', 'https://api.ipify.org']
+            : ['-s', 'https://api.ipify.org'];
 
         final res = await Process.run('curl', args);
         if (res.exitCode == 0 && res.stdout.toString().isNotEmpty) {
@@ -243,25 +256,11 @@ static Future<int> testSpeed(String testUrl) async {
     return null;
   }
 
-  static Future<void> _forceKillOpenVpn() async {
-    try {
-      if (Platform.isMacOS || Platform.isLinux) {
-        await Process.run('sudo', ['pkill', 'openvpn'])
-            .timeout(const Duration(seconds: 2), onTimeout: () => ProcessResult(0, 0, '', ''));
-      }
-    } catch (_) {}
-    await Future.delayed(const Duration(seconds: 1));
-  }
-
-  static Future<void> _cleanupFiles() async {
-    try {
-      if (await File('temp.ovpn').exists()) await File('temp.ovpn').delete();
-      if (await File('vpn_auth.txt').exists()) await File('vpn_auth.txt').delete();
-    } catch (_) {}
-  }
-
   static Future<String?> _waitForAnyInterface(int timeout) async {
-    final candidates = Platform.isLinux ? ['tun0', 'tun1'] : ['utun0', 'utun1', 'utun2', 'utun3', 'utun4', 'utun5'];
+    final candidates = Platform.isLinux
+        ? ['tun0', 'tun1']
+        : ['utun0', 'utun1', 'utun2', 'utun3', 'utun4'];
+
     for (int i = 0; i < timeout; i++) {
       await Future.delayed(const Duration(seconds: 1));
       for (final iface in candidates) {
@@ -273,9 +272,10 @@ static Future<int> testSpeed(String testUrl) async {
 
   static Future<bool> _checkInterfaceExists(String iface) async {
     try {
-      final cmd = Platform.isMacOS ? 'ifconfig' : 'ip';
-      final args = Platform.isMacOS ? [iface] : ['link', 'show', iface];
-      final res = await Process.run(cmd, args);
+      final res = await Process.run(
+        Platform.isLinux ? 'ip' : 'ifconfig',
+        Platform.isLinux ? ['link', 'show', iface] : [iface],
+      );
       return res.exitCode == 0;
     } catch (_) {
       return false;
