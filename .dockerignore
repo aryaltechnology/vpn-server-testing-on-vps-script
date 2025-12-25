@@ -1,0 +1,6 @@
+.git
+.dart_tool
+.pub-cache
+.packages
+pubspec.lock
+build/

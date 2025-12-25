@@ -3,7 +3,7 @@ name: Deploy Dart Tester (Development)
 on:
   push:
     branches:
-      - development  # 👈 Trigger only on development branch
+      - development
 
 jobs:
   deploy:
@@ -23,52 +23,52 @@ jobs:
         chmod 600 ~/.ssh/id_rsa
         ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
-    # 3. Create Remote Directory (If not exists)
+    # 3. Create Remote Directory
     - name: Ensure Remote Directory Exists
       run: |
-        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VPS_USER}}@${{ secrets.VPS_HOST }} "mkdir -p /root/vpn-server-tester/development"
+        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "mkdir -p /root/vpn-server-tester/development"
 
     # 4. Copy Files (SCP)
     - name: Copy Files to VPS
       run: |
         echo "📂 Copying files to VPS..."
-        # Copy everything recursively (-r) to the development folder
         scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/vpn-server-tester/development/
 
     # 5. Inject .env (Using DEV_ENV_FILE secret)
     - name: Inject .env file
       run: |
         echo "💉 Injecting .env..."
-        # Takes the Secret from GitHub and writes it to .env on the VPS
         echo "${{ secrets.DEV_ENV_FILE }}" | ssh -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cat > /root/vpn-server-tester/development/.env"
 
-    # 6. Build & Restart on VPS
+    # 6. Build & Restart on VPS (DOCKER VERSION)
     - name: Remote Build and Restart
       run: |
-        echo "🚀 Connecting to VPS to build..."
+        echo "🚀 Connecting to VPS to build Docker..."
         ssh -t -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
           
           # Go to the development folder
           cd /root/vpn-server-tester/development
 
-          # 1. Get Dependencies
-          echo "📦 Getting Dart dependencies..."
-          dart pub get
+          # 1. Build Docker Image
+          echo "🐳 Building Docker Image..."
+          docker build -t vpn-tester-dev .
 
-          # 2. Compile Binary (Outputting as vpn_tester_dev to distinguish)
-          echo "🔨 Compiling..."
-          dart compile exe bin/server.dart -o vpn_tester_dev
+          # 2. Stop/Remove Old Container
+          echo "🛑 Stopping old container..."
+          docker stop vpn-tester-dev || true
+          docker rm vpn-tester-dev || true
 
-          # 3. Restart PM2
-          echo "🔄 Restarting PM2 Service..."
-          
-          # Check if process is already running
-          if pm2 list | grep -q "vpn-tester-dev"; then
-              pm2 restart vpn-tester-dev
-          else
-              # Start new if not exists
-              pm2 start ./vpn_tester_dev --name "vpn-tester-dev"
-          fi
+          # 3. Run New Container
+          # --cap-add=NET_ADMIN is REQUIRED for OpenVPN inside Docker
+          echo "▶️ Starting new container..."
+          docker run -d \
+            --name vpn-tester-dev \
+            --restart unless-stopped \
+            --cap-add=NET_ADMIN \
+            --device /dev/net/tun \
+            -p 8080:8080 \
+            -v /root/vpn-server-tester/development/.env:/app/.env \
+            vpn-tester-dev
 
-          pm2 save
+          echo "✅ Deployment Success!"
         EOF
