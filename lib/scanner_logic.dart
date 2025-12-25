@@ -5,7 +5,7 @@ import 'vpn_manager.dart';
 import 'server_model.dart';
 import 'config.dart';
 
-
+////////
 class ScannerLogic {
   static bool isScanning = false;
 
