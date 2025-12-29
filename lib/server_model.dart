@@ -37,8 +37,8 @@ class VpnServerModel {
     this.city = '',
     this.country = '',
     this.serverType = 'FREE',
-    this.username = '', // Default empty
-    this.password = '', // Default empty
+    this.username = 'vpn', // Default empty
+    this.password = 'vpn', // Default empty
     this.ping = 0,
     this.downloadSpeed = 0,
     this.score = 0,
@@ -82,8 +82,8 @@ class VpnServerModel {
       serverType: json['serverType'] ?? 'FREE',
 
       // ✅ Map Credentials
-      username: json['username'] ?? '',
-      password: json['password'] ?? '',
+      username: json['username'] ?? 'vpn',
+      password: json['password'] ?? 'vpn',
 
       // Flatten connection info
       downloadSpeed: json['connectionInfo']?['bandwidth']?['download'] ?? 0,
@@ -97,6 +97,8 @@ class VpnServerModel {
     return {
       "id": id,
       "serverType": serverType,
+       // 2. 🕒 CRITICAL: Update this so the server moves to back of the queue
+      "lastTestedAt": DateTime.now().toUtc().toIso8601String(),
       "status": status,
       "connectionInfo": {
         "bandwidth": {"download": downloadSpeed, "upload": downloadSpeed},

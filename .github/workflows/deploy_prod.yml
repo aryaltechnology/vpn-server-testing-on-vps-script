@@ -1,0 +1,77 @@
+name: Deploy Dart Tester (Production)
+
+on:
+  push:
+    branches:
+      - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+    - name: Ensure Directory
+      run: |
+        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "mkdir -p /root/vpn-server-tester/production"
+
+    - name: Copy Files
+      run: |
+        echo "📂 Copying files..."
+        scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/vpn-server-tester/production/
+
+    - name: Inject .env
+      run: |
+        echo "💉 Injecting .env..."
+        echo "${{ secrets.PROD_ENV_FILE }}" | ssh -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cat > /root/vpn-server-tester/production/.env"
+
+    - name: Build & Restart Docker
+      run: |
+        echo "🚀 Connecting to VPS..."
+        # We pass the PORT secret into the SSH command
+        ssh -t -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "export APP_PORT=${{ secrets.PORT }}; bash -s" << 'EOF'
+          
+          APP_NAME="vpn-tester-prod"
+          TARGET_DIR="/root/vpn-server-tester/production"
+          
+          # Check if Port was passed correctly
+          if [ -z "$APP_PORT" ]; then
+            echo "❌ Error: PORT secret is missing!"
+            exit 1
+          fi
+
+          cd $TARGET_DIR
+
+          # 1. Build Image
+          echo "🐳 Building Image..."
+          docker build -t $APP_NAME .
+
+          # 2. Stop Old Container
+          echo "🛑 Stopping old container..."
+          docker stop $APP_NAME || true
+          docker rm $APP_NAME || true
+
+          # 3. Run New Container
+          # We use the variable passed from GitHub Secrets
+          echo "▶️ Starting container on Port $APP_PORT..."
+          docker run -d \
+            --name $APP_NAME \
+            --restart unless-stopped \
+            --cap-add=NET_ADMIN \
+            --device /dev/net/tun \
+            -p $APP_PORT:$APP_PORT \
+            -v $TARGET_DIR/.env:/app/.env \
+            $APP_NAME
+
+          echo "✅ Production Deployed on Port $APP_PORT!"
+        EOF

@@ -16,4 +16,6 @@ class Config {
   static double get homeThreshold => double.tryParse(_env['HOME_THRESHOLD'] ?? '20.0')!;
   static double get goldenThreshold => double.tryParse(_env['GOLDEN_THRESHOLD'] ?? '5.0')!;
   static int get listenerPort => int.tryParse(_env['PORT'] ?? '8080')!;
+
+  static String get secretToken => _env['SECRET_TOKEN'] ?? '';
 }

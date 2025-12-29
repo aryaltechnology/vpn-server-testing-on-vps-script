@@ -194,4 +194,42 @@ class ApiService {
       print("⚠️ Server Deletion Error: $e");
     }
   }
+
+
+
+  // ---------------------------------------------------------
+  // ⚡ NEW: FETCH BATCH (The Infinite Loop Logic)
+  // ---------------------------------------------------------
+  static Future<List<VpnServerModel>> fetchNextBatch({int limit = 50}) async {
+    if (!await _ensureAuth()) return [];
+
+    // We ask for a specific limit. 
+    // Ideally, your backend sorts by 'lastTestedAt' so we get the oldest/newest first.
+    // If your backend doesn't support params yet, it returns all (which is fine, we just process them).
+    final uri = Uri.parse('${Config.baseUrl}/api/v1/vpnServer/candidates-for-testing?limit=$limit');
+    print("🌐 Fetching next batch of $limit servers...");
+
+    try {
+      var response = await http.get(uri, headers: _headers);
+
+      if (response.statusCode == 401) {
+        if (await login()) {
+          response = await http.get(uri, headers: _headers);
+        }
+      }
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        // Handle wrapper: { status: 200, data: [...] }
+        List list = (data is Map && data.containsKey('data')) ? data['data'] : data;
+        return list.map((e) => VpnServerModel.fromJson(e)).toList();
+      } else {
+        print("❌ API Error (${response.statusCode}): ${response.body}");
+        return [];
+      }
+    } catch (e) {
+      print("❌ Connection Error: $e");
+      return [];
+    }
+  }
 }
