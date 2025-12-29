@@ -46,7 +46,7 @@ jobs:
           
           # Check if Port was passed correctly
           if [ -z "$APP_PORT" ]; then
-            $APP_PORT=8090
+             APP_PORT=8090
           fi
 
           cd $TARGET_DIR
