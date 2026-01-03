@@ -96,6 +96,7 @@ class VpnServerModel {
   Map<String, dynamic> toUpdateJson() {
     return {
       "id": id,
+      "isFree": isFree,
       "serverType": serverType,
        // 2. 🕒 CRITICAL: Update this so the server moves to back of the queue
       "lastTestedAt": DateTime.now().toUtc().toIso8601String(),

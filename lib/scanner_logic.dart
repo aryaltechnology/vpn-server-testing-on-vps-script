@@ -204,6 +204,7 @@ data-ciphers-fallback AES-256-CBC''',
         s.serverType = "GOLDEN";
       } else {
         s.serverType = "FREE";
+        s.isFree=true;
       }
       
       print("   🏆 ${s.ipAddress} -> ${s.serverType} (${result.speedMbps} Mbps)");
