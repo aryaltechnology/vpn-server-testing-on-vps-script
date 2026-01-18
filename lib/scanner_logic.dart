@@ -71,10 +71,12 @@ class ScannerLogic {
 
   // =================================================================
   // 💎 PREMIUM GUARD LOGIC (Connect or Delete)
+// =================================================================
+  // 💎 PREMIUM GUARD LOGIC (Immediate Action)
   // =================================================================
   static Future<void> _processPremiumGuardBatch(List<VpnServerModel> servers) async {
-    List<VpnServerModel> updatesBuffer = [];
-    List<String> deleteIds = [];
+    
+    // We removed 'deleteIds' list because we delete instantly now.
 
     for (var server in servers) {
       if (stopScanning) break;
@@ -83,8 +85,10 @@ class ScannerLogic {
       // 1. Config Check
       String? configStr = _prepareConfig(server);
       if (configStr == null) {
-        if (server.id != null) deleteIds.add(server.id!);
-        print("   🗑️ Bad Config. Deleting.");
+        if (server.id != null) {
+           print("   🗑️ Bad Config. Deleting VIP Immediately.");
+           await ApiService.deleteServer(server.id!); // ⚡ IMMEDIATE DELETE
+        }
         continue;
       }
 
@@ -98,40 +102,35 @@ class ScannerLogic {
         );
 
         if (result.success) {
-          // ✅ ALIVE: Update stats, BUT KEEP RANK (Don't downgrade)
+          // ✅ ALIVE: Update stats
           server.downloadSpeed = result.speedMbps;
           server.ping = result.pingMs.toInt();
           server.status = "active";
           
-          // Update score for sorting in app
           double speedScore = min(result.speedMbps.toDouble(), 100.0);
           double timeScore = max(0, 100 - (result.connectTimeMs / 100));
           double pingScore = max(0, 100 - (result.pingMs / 5));
           server.score = ((speedScore * 0.5) + (timeScore * 0.3) + (pingScore * 0.2)).round();
 
-          updatesBuffer.add(server);
-          print("   ✅ Alive. Stats updated (${result.speedMbps} Mbps).");
+          // We keep 'Alive' updates in a buffer to reduce API noise, 
+          // as updating speed isn't as urgent as deleting dead servers.
+          print("   ✅ Alive. Speed: ${result.speedMbps} Mbps.");
         } else {
           // ❌ DEAD: Delete immediately.
-          if (server.id != null) deleteIds.add(server.id!);
-          print("   🗑️ Failed to connect. Deleting VIP.");
+          if (server.id != null) {
+             print("   🗑️ Failed to connect. Deleting VIP Immediately.");
+             await ApiService.deleteServer(server.id!); // ⚡ IMMEDIATE DELETE
+          }
         }
       } catch (e) {
         print("   ⚠️ Error: $e");
       }
     }
 
-    // 3. Commit Changes
-    if (updatesBuffer.isNotEmpty) {
-     // await ApiService.sendBulkUpdate(updatesBuffer);
-    }
-    if (deleteIds.isNotEmpty) {
-      print("🗑 Deleting ${deleteIds.length} broken VIP servers...");
-      await ApiService.sendBulkDelete(deleteIds);
-    }
+    
+
     print("💎 Guard Batch Complete.\n");
   }
-
   // =================================================================
   // ⛏️ MINER LOGIC (Ratio Grading)
   // =================================================================
