@@ -18,4 +18,7 @@ class Config {
   static int get listenerPort => int.tryParse(_env['PORT'] ?? '8080')!;
 
   static String get secretToken => _env['SECRET_TOKEN'] ?? '';
+
+    static bool get isPremiumTester => (_env['IS_PREMIUM_TESTER'] ?? 'false').toLowerCase() == 'true';
+
 }

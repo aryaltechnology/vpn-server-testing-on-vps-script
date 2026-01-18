@@ -9,25 +9,12 @@ class ScannerLogic {
   static bool isScanning = false;
   static bool stopScanning = false;
 
-  // ⚡ BATCH SIZE
-  static const int BATCH_SIZE = 40;
+  // ⚡ BATCH SIZE: Fetch 40 servers at a time
+  static const int BATCH_SIZE = 10;
 
-  // 🧠 DYNAMIC BRAIN
-  static double _globalAvgSpeed = 8.0;
-
-  // 🛡️ 1. ABSOLUTE FLOORS (Quality)
-  static const int FLOOR_HOME = 15;
-  static const int FLOOR_GOLDEN = 5;
-
-  // 💰 2. DYNAMIC MULTIPLIERS (Trend)
-  static const double MULTIPLIER_HOME = 2.0; 
-  static const double MULTIPLIER_GOLDEN = 1.0; 
-
-  // 🔒 3. SCARCITY CAPS (The Hard Limit per batch)
-  // Max 5% of batch can be Home (e.g., 2 servers out of 40)
-  // Max 10% of batch can be Golden (e.g., 4 servers out of 40)
-  static const double CAP_HOME_PERCENT = 0.05;
-  static const double CAP_GOLDEN_PERCENT = 0.10;
+  // 🔒 SCARCITY CAPS (The Hard Ratio for Miner Mode)
+  static const double CAP_HOME_PERCENT = 0.05;   // Top 5%
+  static const double CAP_GOLDEN_PERCENT = 0.10; // Next 10%
 
   static Future<void> startScan() async {
     if (isScanning) {
@@ -37,13 +24,23 @@ class ScannerLogic {
 
     stopScanning = false;
     isScanning = true;
-    print("\n🏁 STARTED: Triple-Lock Scarcity Mode");
-    print("🧠 Initial Global Average: ${_globalAvgSpeed.toStringAsFixed(2)} Mbps");
+    
+    // Check Mode from Config
+    if (Config.isPremiumTester) {
+      print("\n💎 STARTED: Premium Guard Mode (Maintenance & Cleanup)");
+    } else {
+      print("\n⛏️ STARTED: Miner Mode (Ratio Grading & Discovery)");
+    }
 
+    // 🔄 1. THE INFINITE LOOP
     while (isScanning) {
-      if (stopScanning) break;
+      if (stopScanning) {
+        print("🛑 Stop signal received. Exiting loop.");
+        break;
+      }
 
       try {
+        // 🔄 2. FETCH BATCH
         List<VpnServerModel> batch = await ApiService.fetchNextBatch(limit: BATCH_SIZE);
 
         if (batch.isEmpty) {
@@ -53,10 +50,17 @@ class ScannerLogic {
         }
 
         print("\n📦 Processing Batch of ${batch.length} servers...");
-        await _processAndGradeBatch(batch);
+        
+        // 🔄 3. CHOOSE LOGIC BASED ON MODE
+        if (Config.isPremiumTester) {
+          await _processPremiumGuardBatch(batch);
+        } else {
+          await _processAndGradeBatch(batch);
+        }
 
       } catch (e) {
         print("💥 Loop Error: $e");
+        print("   Restarting loop in 10 seconds...");
         await Future.delayed(Duration(seconds: 10));
       }
     }
@@ -65,38 +69,94 @@ class ScannerLogic {
     print("🏁 SERVICE STOPPED.");
   }
 
+  // =================================================================
+  // 💎 PREMIUM GUARD LOGIC (Connect or Delete)
+  // =================================================================
+  static Future<void> _processPremiumGuardBatch(List<VpnServerModel> servers) async {
+    List<VpnServerModel> updatesBuffer = [];
+    List<String> deleteIds = [];
+
+    for (var server in servers) {
+      if (stopScanning) break;
+      print("👉 Checking VIP ${server.ipAddress} (${server.serverType})...");
+
+      // 1. Config Check
+      String? configStr = _prepareConfig(server);
+      if (configStr == null) {
+        if (server.id != null) deleteIds.add(server.id!);
+        print("   🗑️ Bad Config. Deleting.");
+        continue;
+      }
+
+      // 2. Test Connection
+      try {
+        TestResult result = await VpnManager.connectAndTest(
+          configContent: configStr,
+          ip: server.ipAddress,
+          username: server.username,
+          password: server.password,
+        );
+
+        if (result.success) {
+          // ✅ ALIVE: Update stats, BUT KEEP RANK (Don't downgrade)
+          server.downloadSpeed = result.speedMbps;
+          server.ping = result.pingMs.toInt();
+          server.status = "active";
+          
+          // Update score for sorting in app
+          double speedScore = min(result.speedMbps.toDouble(), 100.0);
+          double timeScore = max(0, 100 - (result.connectTimeMs / 100));
+          double pingScore = max(0, 100 - (result.pingMs / 5));
+          server.score = ((speedScore * 0.5) + (timeScore * 0.3) + (pingScore * 0.2)).round();
+
+          updatesBuffer.add(server);
+          print("   ✅ Alive. Stats updated (${result.speedMbps} Mbps).");
+        } else {
+          // ❌ DEAD: Delete immediately.
+          if (server.id != null) deleteIds.add(server.id!);
+          print("   🗑️ Failed to connect. Deleting VIP.");
+        }
+      } catch (e) {
+        print("   ⚠️ Error: $e");
+      }
+    }
+
+    // 3. Commit Changes
+    if (updatesBuffer.isNotEmpty) {
+     // await ApiService.sendBulkUpdate(updatesBuffer);
+    }
+    if (deleteIds.isNotEmpty) {
+      print("🗑 Deleting ${deleteIds.length} broken VIP servers...");
+      await ApiService.sendBulkDelete(deleteIds);
+    }
+    print("💎 Guard Batch Complete.\n");
+  }
+
+  // =================================================================
+  // ⛏️ MINER LOGIC (Ratio Grading)
+  // =================================================================
   static Future<void> _processAndGradeBatch(List<VpnServerModel> servers) async {
     Map<VpnServerModel, TestResult> successfulTests = {};
     List<String> deleteIds = [];
-    List<int> speedSamples = [];
 
     // A. TEST PHASE
     for (var i = 0; i < servers.length; i++) {
       if (stopScanning) break;
-
       var server = servers[i];
       print("👉 [${i + 1}/${servers.length}] Testing ${server.ipAddress}...");
 
       try {
-        // Config Parsing (Your Exact Logic)
-        Map<String, dynamic> openvpnConfig = jsonDecode(jsonEncode(server.config));
-        String patchedConfigFile = openvpnConfig['openvpnConfig'] ?? "";
-
-        if (patchedConfigFile.isEmpty) {
+        // 1. Config Parsing
+        String? configStr = _prepareConfig(server);
+        if (configStr == null) {
           if (server.id != null) deleteIds.add(server.id!);
-          print("   ⚠️ No config found. Added to delete list.");
+          print("   ⚠️ No config found. Added to Bulk Delete list.");
           continue;
         }
 
-        if (patchedConfigFile.contains('cipher AES-128-CBC') && !patchedConfigFile.contains('data-ciphers')) {
-          patchedConfigFile = patchedConfigFile.replaceAll('cipher AES-128-CBC', 'cipher AES-128-CBC\ndata-ciphers AES-128-CBC\ndata-ciphers-fallback AES-128-CBC');
-        }
-        if (patchedConfigFile.contains('cipher AES-256-CBC') && !patchedConfigFile.contains('data-ciphers')) {
-          patchedConfigFile = patchedConfigFile.replaceAll('cipher AES-256-CBC', 'cipher AES-256-CBC\ndata-ciphers AES-256-CBC\ndata-ciphers-fallback AES-256-CBC');
-        }
-
+        // 2. Run Test
         TestResult result = await VpnManager.connectAndTest(
-          configContent: patchedConfigFile,
+          configContent: configStr,
           ip: server.ipAddress,
           username: server.username,
           password: server.password,
@@ -104,133 +164,124 @@ class ScannerLogic {
 
         if (result.success) {
           successfulTests[server] = result;
-          speedSamples.add(result.speedMbps);
-          print("   ✅ Connected (${result.speedMbps} Mbps) - Pending Grading");
+          print("   ✅ Connected (Speed: ${result.speedMbps} Mbps, Time: ${result.connectTimeMs}ms)");
         } else {
           if (server.id != null) deleteIds.add(server.id!);
-          print("   🗑️ Connection Failed.");
+          print("   🗑️ Connection Failed. Added to Bulk Delete list.");
         }
-
       } catch (innerError) {
-        print("   💥 Error processing: $innerError");
+        print("   💥 Error processing ${server.ipAddress}: $innerError");
       }
     }
 
-    // B. LEARNING PHASE
-    if (speedSamples.isNotEmpty) {
-      double batchAvg = speedSamples.reduce((a, b) => a + b) / speedSamples.length;
-      _globalAvgSpeed = (_globalAvgSpeed * 0.9) + (batchAvg * 0.1);
-      print("🧠 GLOBAL UPDATE: New Benchmark = ${_globalAvgSpeed.toStringAsFixed(2)} Mbps");
-    }
-
-    // C. TRIPLE-LOCK GRADING PHASE
+    // B. GRADING PHASE (Only if we have survivors)
     if (successfulTests.isNotEmpty) {
       print("📊 Grading ${successfulTests.length} survivors...");
-      List<VpnServerModel> rankedServers = _applyTripleLockGrading(successfulTests);
+      List<VpnServerModel> rankedServers = _applyForcedRatioGrading(successfulTests);
       
       print("📤 Sending Bulk Update...");
       await ApiService.sendBulkUpdate(rankedServers);
     }
 
-    // D. DELETE PHASE
+    // C. DELETE PHASE
     if (deleteIds.isNotEmpty) {
-      print("🗑 Cleaning ${deleteIds.length} Dead Servers...");
+      print("🗑 Sending Bulk Delete for ${deleteIds.length} servers...");
       await ApiService.sendBulkDelete(deleteIds);
     }
     
     print("✅ Batch Complete.\n");
   }
 
-  // --- TRIPLE LOCK GRADING LOGIC ---
-  static List<VpnServerModel> _applyTripleLockGrading(Map<VpnServerModel, TestResult> resultsMap) {
+  // --- MINER GRADING LOGIC (Weighted Score + Ratio) ---
+  static List<VpnServerModel> _applyForcedRatioGrading(Map<VpnServerModel, TestResult> resultsMap) {
     List<VpnServerModel> allServers = resultsMap.keys.toList();
     
-    // Temporary lists for sorting
-    List<VpnServerModel> homeCandidates = [];
-    List<VpnServerModel> goldenCandidates = [];
-    List<VpnServerModel> freeCandidates = [];
-
-    // 1. QUALIFICATION ROUND (Apply Floors & Dynamic Multipliers)
+    // 1. CALCULATE WEIGHTED SCORE
     for (var s in allServers) {
       var result = resultsMap[s]!;
-      int speed = result.speedMbps;
-
-      // Update basic stats
-      s.downloadSpeed = speed;
+      
+      // Update Model Data
+      s.downloadSpeed = result.speedMbps;
       s.ping = result.pingMs.toInt();
       s.status = "active";
-      s.score = min((speed / 100.0) * 80 + (100 / (result.pingMs + 1)) * 20, 100.0).toInt();
+      
+      // A. Speed Score (50% Weight) - Cap at 100 Mbps
+      double speedScore = min(result.speedMbps.toDouble(), 100.0);
 
-      // Check Quality
-      bool qualifiesHome = (speed >= FLOOR_HOME) && (speed >= _globalAvgSpeed * MULTIPLIER_HOME);
-      bool qualifiesGolden = (speed >= FLOOR_GOLDEN) && (speed >= _globalAvgSpeed * MULTIPLIER_GOLDEN);
+      // B. Connect Time Score (30% Weight) - Instant=100, 10s=0
+      double timeScore = max(0, 100 - (result.connectTimeMs / 100));
 
-      if (qualifiesHome) {
-        homeCandidates.add(s);
-      } else if (qualifiesGolden) {
-        goldenCandidates.add(s);
-      } else {
-        freeCandidates.add(s);
-      }
+      // C. Ping Score (20% Weight) - 0ms=100, 500ms=0
+      double pingScore = max(0, 100 - (result.pingMs / 5));
+
+      // D. Final Weighted Score
+      s.score = ((speedScore * 0.5) + (timeScore * 0.3) + (pingScore * 0.2)).round();
     }
 
-    // 2. SORTING ROUND (Best speeds first)
-    homeCandidates.sort((a, b) => b.downloadSpeed.compareTo(a.downloadSpeed));
-    goldenCandidates.sort((a, b) => b.downloadSpeed.compareTo(a.downloadSpeed));
+    // 2. SORT BY SCORE (Best First)
+    allServers.sort((a, b) => b.score.compareTo(a.score));
 
-    // 3. CAP ROUND (Enforce Scarcity)
-    int maxHome = (allServers.length * CAP_HOME_PERCENT).round();
-    if (maxHome < 1 && allServers.length >= 5) maxHome = 1; // Allow 1 if batch is decent
+    // 3. CALCULATE CUTOFFS (Strict Ratio)
+    int totalCount = allServers.length;
+    int homeCount = (totalCount * CAP_HOME_PERCENT).round();
+    int goldenCount = (totalCount * CAP_GOLDEN_PERCENT).round();
 
-    int maxGolden = (allServers.length * CAP_GOLDEN_PERCENT).round();
-    if (maxGolden < 1 && allServers.length >= 3) maxGolden = 1;
+    // Ensure at least 1 Home/Golden if we have enough servers
+    if (totalCount >= 1 && homeCount == 0) homeCount = 1;
+    if (totalCount >= 3 && goldenCount == 0) goldenCount = 1;
 
-    // -- Process HOME Caps --
-    List<VpnServerModel> finalHome = [];
-    if (homeCandidates.length > maxHome) {
-      // Keep top X, demote the rest to Golden
-      finalHome = homeCandidates.sublist(0, maxHome);
-      List<VpnServerModel> demoted = homeCandidates.sublist(maxHome);
-      goldenCandidates.addAll(demoted); // Add demoted to Golden pool
-      // Re-sort Golden because we just added new ones
-      goldenCandidates.sort((a, b) => b.downloadSpeed.compareTo(a.downloadSpeed));
-    } else {
-      finalHome = homeCandidates;
-    }
-
-    // -- Process GOLDEN Caps --
-    List<VpnServerModel> finalGolden = [];
-    if (goldenCandidates.length > maxGolden) {
-      // Keep top Y, demote the rest to Free
-      finalGolden = goldenCandidates.sublist(0, maxGolden);
-      List<VpnServerModel> demoted = goldenCandidates.sublist(maxGolden);
-      freeCandidates.addAll(demoted);
-    } else {
-      finalGolden = goldenCandidates;
-    }
-
-    // 4. FINAL ASSIGNMENT
+    // 4. ASSIGN TYPES
     List<VpnServerModel> resultList = [];
+    
+    for (int i = 0; i < totalCount; i++) {
+      var s = allServers[i];
+      var res = resultsMap[s]!;
 
-    for (var s in finalHome) {
-      s.serverType = "HOME";
-      s.isFree = false;
-      print("   🏆 ${s.ipAddress} -> HOME (${s.downloadSpeed} Mbps)");
-      resultList.add(s);
-    }
-    for (var s in finalGolden) {
-      s.serverType = "GOLDEN";
-      s.isFree = false;
-      print("   🥇 ${s.ipAddress} -> GOLDEN (${s.downloadSpeed} Mbps)");
-      resultList.add(s);
-    }
-    for (var s in freeCandidates) {
-      s.serverType = "FREE";
-      s.isFree = true;
-      print("   🆓 ${s.ipAddress} -> FREE (${s.downloadSpeed} Mbps)");
+      if (i < homeCount) {
+        s.serverType = "HOME";
+        s.isFree = false;
+        print("   🏆 ${s.ipAddress} -> HOME (Score: ${s.score} | ${res.speedMbps}Mbps)");
+      } else if (i < (homeCount + goldenCount)) {
+        s.serverType = "GOLDEN";
+        s.isFree = false;
+        print("   🥇 ${s.ipAddress} -> GOLDEN (Score: ${s.score})");
+      } else {
+        s.serverType = "FREE";
+        s.isFree = true;
+        print("   🆓 ${s.ipAddress} -> FREE (Score: ${s.score})");
+      }
       resultList.add(s);
     }
 
     return resultList;
+  }
+
+  // --- CONFIG PARSER (Your Exact Logic) ---
+  static String? _prepareConfig(VpnServerModel server) {
+    try {
+      // JSON Encode/Decode hack to fix Map types
+      Map<String, dynamic> openvpnConfig = jsonDecode(jsonEncode(server.config));
+      String patchedConfigFile = openvpnConfig['openvpnConfig'] ?? "";
+
+      if (patchedConfigFile.isEmpty) return null;
+
+      // Cipher Patching
+      if (patchedConfigFile.contains('cipher AES-128-CBC') && !patchedConfigFile.contains('data-ciphers')) {
+        patchedConfigFile = patchedConfigFile.replaceAll(
+          'cipher AES-128-CBC',
+          '''cipher AES-128-CBC\ndata-ciphers AES-128-CBC\ndata-ciphers-fallback AES-128-CBC''',
+        );
+      }
+
+      if (patchedConfigFile.contains('cipher AES-256-CBC') && !patchedConfigFile.contains('data-ciphers')) {
+        patchedConfigFile = patchedConfigFile.replaceAll(
+          'cipher AES-256-CBC',
+          '''cipher AES-256-CBC\ndata-ciphers AES-256-CBC\ndata-ciphers-fallback AES-256-CBC''',
+        );
+      }
+      return patchedConfigFile;
+    } catch (_) {
+      return null;
+    }
   }
 }

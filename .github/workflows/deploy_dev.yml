@@ -68,6 +68,7 @@ jobs:
             --device /dev/net/tun \
             -p 8080:8080 \
             -v /root/vpn-server-tester/development/.env:/app/.env \
+            -e IS_PREMIUM_TESTER=false \
             vpn-tester-dev
 
           echo "✅ Deployment Success!"

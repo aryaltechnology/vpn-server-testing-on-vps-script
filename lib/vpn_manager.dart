@@ -6,7 +6,9 @@ class TestResult {
   final bool success;
   final int speedMbps;
   final double pingMs;
-  TestResult(this.success, this.speedMbps, this.pingMs);
+  final int connectTimeMs; // ⏱️ NEW: Time taken to establish connection
+  
+  TestResult(this.success, this.speedMbps, this.pingMs, this.connectTimeMs);
 }
 
 class VpnManager {
@@ -32,19 +34,21 @@ class VpnManager {
     bool hasAuth = username.isNotEmpty && password.isNotEmpty;
     Process? openVpnProcess;
     
+    // ⏱️ TIMER SETUP
+    Stopwatch connectStopwatch = Stopwatch();
+    bool ovpnConnected = false;
+    bool authFailed = false;
+
     // 🌟 STEP 0: Resolve IPs Manually (IPv4 Only)
     String? speedTestIp;
     String? ipCheckIp;
     
     try {
-      // Resolve Speed Test
       var addresses = await InternetAddress.lookup(_speedTestHost, type: InternetAddressType.IPv4);
       if (addresses.isNotEmpty) {
         speedTestIp = addresses.first.address;
         print("   🎯 Target: Speed Test ($_speedTestHost -> $speedTestIp)");
       }
-      
-      // Resolve IP Check
       addresses = await InternetAddress.lookup(_ipCheckHost, type: InternetAddressType.IPv4);
       if (addresses.isNotEmpty) {
         ipCheckIp = addresses.first.address;
@@ -76,11 +80,8 @@ class VpnManager {
         '--pull-filter', 'ignore', 'ifconfig-ipv6', 
         '--pull-filter', 'ignore', 'route-ipv6', 
         
-        // ✅ EXPLICIT ROUTES (Force these IPs into the tunnel)
-        // 1. Connectivity Check (1.1.1.1)
+        // ✅ EXPLICIT ROUTES
         '--route', '1.1.1.1', '255.255.255.255', 'vpn_gateway',
-        
-        // 2. The Resolved Service IPs
         if (speedTestIp != null) 
           '--route', speedTestIp!, '255.255.255.255', 'vpn_gateway',
         if (ipCheckIp != null)
@@ -97,25 +98,31 @@ class VpnManager {
       print("🔌 Connecting to Target Server: $ip ...");
 
       String openVpnPath = await _resolveOpenVpnPath();
+      
+      // ⏱️ START TIMER
+      connectStopwatch.start();
+      
       openVpnProcess = await Process.start('sudo', [openVpnPath, ...args]);
 
       // Listen for connection success
-      bool ovpnConnected = false;
-      bool authFailed = false;
-
       openVpnProcess.stdout.transform(utf8.decoder).listen((data) {
         if (data.contains('Initialization Sequence Completed')) {
+          // ⏱️ STOP TIMER (Connection Success)
+          connectStopwatch.stop(); 
           ovpnConnected = true;
-          print("   [OVPN] Tunnel established");
+          print("   [OVPN] Tunnel established in ${connectStopwatch.elapsedMilliseconds} ms");
         }
-        if (data.contains('AUTH_FAILED')) authFailed = true;
+        if (data.contains('AUTH_FAILED')) {
+          authFailed = true;
+          print("   [OVPN] AUTH_FAILED");
+        }
       });
 
       // 5. Wait for interface
       String? activeInterface = await _waitForAnyInterface(15); 
       if (activeInterface == null || authFailed) {
         print("   ❌ VPN connection failed (auth or interface)");
-        return TestResult(false, 0, 0);
+        return TestResult(false, 0, 0, 0);
       }
 
       print("   🔗 Interface detected: $activeInterface");
@@ -124,65 +131,58 @@ class VpnManager {
       if (Platform.isLinux) {
         if (!await _waitForIpAddress(activeInterface, 25)) {
           print("   ❌ Linux: tun interface has NO IP");
-          return TestResult(false, 0, 0);
+          return TestResult(false, 0, 0, 0);
         }
       } else {
         await Future.delayed(const Duration(seconds: 3));
       }
 
-      // 7. Wait for OpenVPN Init
+      // 7. Wait for OpenVPN Init confirmation
       bool connected = false;
       for (int i = 0; i < 30; i++) {
         if (ovpnConnected) {
           connected = true;
           break;
         }
-        //
         await Future.delayed(const Duration(seconds: 1));
       }
 
       if (!connected) {
         print("   ❌ OpenVPN did not complete initialization");
-        return TestResult(false, 0, 0);
+        return TestResult(false, 0, 0, 0);
       }
 
-      // 8. VERIFY CONNECTIVITY (The Fix)
+      // 8. VERIFY CONNECTIVITY (1.1.1.1)
       print("   🌍 Verifying Internet Access...");
-      
-      // We check via the explicitly routed IP (1.1.1.1) first
-      // This is the most reliable check because we manually added the route.
       bool hasRoute = await _verifyTunnelRouting(activeInterface);
       
       if (!hasRoute) {
         print("   ❌ Connected but traffic blocked (Routing failed)");
-        return TestResult(false, 0, 0);
+        return TestResult(false, 0, 0, 0);
       }
-      
-      // Optional: Check Public IP (using the resolved IP to avoid DNS mismatch)
-      if (ipCheckIp != null) {
-        String? visibleIp = await _getPublicIp(activeInterface, ipCheckIp!, _ipCheckHost);
-        print("   ✅ Connected! Exit IP: ${visibleIp ?? 'Hidden'}");
-      }
+      print("   ✅ Tunnel Verified (Traffic flowing via VPN Route)");
 
-      // 9. Speed Test (Using Fixed IP + Host Header)
+      // 9. Speed Test
       print("  🚀 Testing Speed...");
       if (speedTestIp == null) {
-         print("   ⚠️ Speed test skipped (DNS failed)");
-         return TestResult(true, 0, 0); // Consider success connection-wise
+         return TestResult(true, 0, 0, connectStopwatch.elapsedMilliseconds); 
       }
 
-      final speed = await testSpeed(activeInterface, speedTestIp!, _speedTestHost, _speedTestPath); 
+      // Using IP directly to match route
+      String targetUrl = 'http://$speedTestIp$_speedTestPath';
+      final speed = await testSpeed(activeInterface, targetUrl, _speedTestHost); 
 
       // 10. Ping
       print("  📶 Testing Ping...");
       final pingMs = await testPing(speedTestIp!, activeInterface);
       print("  ✅ Ping: ${pingMs.toStringAsFixed(2)} ms");
 
-      return TestResult(true, speed, pingMs);
+      // ✅ RETURN WITH TIME
+      return TestResult(true, speed, pingMs, connectStopwatch.elapsedMilliseconds);
       
     } catch (e) {
       print("   ⚠️ Exception: $e");
-      return TestResult(false, 0, 0);
+      return TestResult(false, 0, 0, 0);
     } finally {
       openVpnProcess?.kill();
       await _forceKillOpenVpn();
@@ -196,7 +196,7 @@ class VpnManager {
     for (int i = 0; i < 3; i++) {
       try {
         final res = await Process.run('curl', [
-          if (Platform.isLinux) ...['--interface', interface], // Bind on Linux
+          if (Platform.isLinux) ...['--interface', interface], 
           '--max-time', '5',
           '-s', '-o', '/dev/null',
           '-w', '%{http_code}',
@@ -217,8 +217,8 @@ class VpnManager {
         if (Platform.isLinux) ...['--interface', interface],
         '--max-time', '8', 
         '-s', 
-        '-H', 'Host: $host', // ⚡ MAGIC FIX: Tell server we want api.ipify.org
-        'http://$ip'         // ⚡ Connect directly to IP
+        '-H', 'Host: $host',
+        'http://$ip'         
       ]);
       
       if (res.exitCode == 0 && res.stdout.toString().isNotEmpty) {
@@ -228,7 +228,7 @@ class VpnManager {
     return null;
   }
 
-  static Future<int> testSpeed(String interface, String ip, String host, String path) async {
+  static Future<int> testSpeed(String interface, String url, String host) async {
     try {
       final stopwatch = Stopwatch()..start();
       
@@ -238,9 +238,9 @@ class VpnManager {
         '--max-time', '45', 
         '--connect-timeout', '10',
         '-s', '-L', '-k',
-        '-H', 'Host: $host', // ⚡ Force Host Header
+        '-H', 'Host: $host', 
         '-w', '%{http_code}',
-        'http://$ip$path'    // ⚡ Connect to IP directly
+        url
       ]);
       
       stopwatch.stop();
@@ -257,7 +257,7 @@ class VpnManager {
         print("  ✅ Speed: $speedMbps Mbps");
         return speedMbps;
       } else {
-        print("  ⚠️ Speed test failed (Code ${result.exitCode}, HTTP $out)");
+        print("  ⚠️ Speed test failed (Curl code ${result.exitCode}, HTTP $out)");
         return 0;
       }
     } catch (e) {

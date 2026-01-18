@@ -70,6 +70,7 @@ jobs:
             --device /dev/net/tun \
             -p $APP_PORT:$APP_PORT \
             -v $TARGET_DIR/.env:/app/.env \
+            -e IS_PREMIUM_TESTER=false \
             $APP_NAME
 
           echo "✅ Production Deployed on Port $APP_PORT!"

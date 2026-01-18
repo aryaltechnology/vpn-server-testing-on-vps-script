@@ -1,0 +1,88 @@
+name: Deploy Dart Tester (PREMIUM Guard)
+
+on:
+  push:
+    branches:
+      - premium-tester
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Get Code
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    # 2. Setup SSH Key
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+    # 3. Create Remote Directory
+    - name: Ensure Directory
+      run: |
+        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "mkdir -p /root/vpn-server-tester/premium-tester"
+
+    # 4. Copy Files
+    - name: Copy Files to VPS
+      run: |
+        echo "📂 Copying files..."
+        scp -i ~/.ssh/id_rsa -r ./* ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/vpn-server-tester/premium-tester/
+
+    # 5. Inject .env
+    - name: Inject .env
+      run: |
+        echo "💉 Injecting .env..."
+        echo "${{ secrets.PREMIUM_TESTER_ENV_FILE }}" | ssh -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cat > /root/vpn-server-tester/premium-tester/.env"
+
+    # 6. Build & Restart Docker (Guard Mode)
+    - name: Build & Restart Docker
+      run: |
+        echo "🚀 Connecting to VPS..."
+        
+        # Pass the PORT secret. If it's missing in secrets, we handle it inside script.
+        ssh -t -i ~/.ssh/id_rsa ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "export APP_PORT='${{ secrets.PORT }}'; bash -s" << 'EOF'
+          
+          APP_NAME="vpn-tester-premium"
+          TARGET_DIR="/root/vpn-server-tester/premium-tester"
+          INTERNAL_PORT=8080  # Dart app always listens on 8080 inside
+          
+          # Default to 8095 if secret is not set (Safety Fallback)
+          if [ -z "$APP_PORT" ]; then
+             echo "⚠️ PORT secret missing. Defaulting to 8095."
+             APP_PORT=8095
+          fi
+
+          cd $TARGET_DIR
+
+          # 1. Build Image
+          echo "🐳 Building Image..."
+          docker build -t $APP_NAME .
+
+          # 2. Stop Old Container
+          echo "🛑 Stopping old container..."
+          docker stop $APP_NAME || true
+          docker rm $APP_NAME || true
+
+          # 3. Run New Container
+          # -p $APP_PORT:8080 maps External (e.g. 8095) to Internal (8080)
+          # -e PREMIUM_ONLY=true forces Guard Mode logic
+          echo "▶️ Starting PREMIUM GUARD on Port $APP_PORT..."
+          
+          docker run -d \
+            --name $APP_NAME \
+            --restart unless-stopped \
+            --cap-add=NET_ADMIN \
+            --device /dev/net/tun \
+            -p $APP_PORT:$INTERNAL_PORT \
+            -v $TARGET_DIR/.env:/app/.env \
+            -e IS_PREMIUM_TESTER=true \
+            $APP_NAME
+
+          echo "✅ PREMIUM Tester Deployed on Port $APP_PORT!"
+        EOF
