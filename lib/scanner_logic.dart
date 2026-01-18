@@ -10,7 +10,7 @@ class ScannerLogic {
   static bool stopScanning = false;
 
   // ⚡ BATCH SIZE: Fetch 40 servers at a time
-  static const int BATCH_SIZE = 10;
+  static const int BATCH_SIZE = 50;
 
   // 🔒 SCARCITY CAPS (The Hard Ratio for Miner Mode)
   static const double CAP_HOME_PERCENT = 0.05;   // Top 5%
