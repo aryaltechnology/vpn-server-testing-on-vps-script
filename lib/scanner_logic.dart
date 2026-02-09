@@ -9,12 +9,12 @@ class ScannerLogic {
   static bool isScanning = false;
   static bool stopScanning = false;
 
-  // ⚡ BATCH SIZE: Fetch 40 servers at a time
-  static const int BATCH_SIZE = 10;
+  // ⚡ BATCH SIZE: Updated to 40 as requested
+  static const int BATCH_SIZE = 40;
 
-  // 🔒 SCARCITY CAPS (The Hard Ratio for Miner Mode)
-  static const double CAP_HOME_PERCENT = 0.05;   // Top 5%
-  static const double CAP_GOLDEN_PERCENT = 0.10; // Next 10%
+  // 🔒 SCARCITY CAPS
+  // We only want very few Golden servers (approx 1 out of 40)
+  static const double CAP_GOLDEN_PERCENT = 0.05; // 5% of 40 = 2 Servers
 
   static Future<void> startScan() async {
     if (isScanning) {
@@ -29,7 +29,7 @@ class ScannerLogic {
     if (Config.isPremiumTester) {
       print("\n💎 STARTED: Premium Guard Mode (Maintenance & Cleanup)");
     } else {
-      print("\n⛏️ STARTED: Miner Mode (Ratio Grading & Discovery)");
+      print("\n⛏️ STARTED: Miner Mode (Golden Discovery)");
     }
 
     // 🔄 1. THE INFINITE LOOP
@@ -70,24 +70,19 @@ class ScannerLogic {
   }
 
   // =================================================================
-  // 💎 PREMIUM GUARD LOGIC (Connect or Delete)
-// =================================================================
-  // 💎 PREMIUM GUARD LOGIC (Immediate Action)
+  // 💎 PREMIUM GUARD LOGIC (Immediate Action) - UNCHANGED
   // =================================================================
   static Future<void> _processPremiumGuardBatch(List<VpnServerModel> servers) async {
-    
-    // We removed 'deleteIds' list because we delete instantly now.
-
     for (var server in servers) {
       if (stopScanning) break;
-      print("👉 Checking VIP ${server.ipAddress} (${server.serverType})...");
+      print("👉 Checking VIP ${server.serverName} ${server.city} ${server.ipAddress} (${server.serverType})...");
 
       // 1. Config Check
       String? configStr = _prepareConfig(server);
       if (configStr == null) {
         if (server.id != null) {
            print("   🗑️ Bad Config. Deleting VIP Immediately.");
-           await ApiService.deleteServer(server.id!); // ⚡ IMMEDIATE DELETE
+           await ApiService.deleteServer(server.id!);
         }
         continue;
       }
@@ -102,7 +97,7 @@ class ScannerLogic {
         );
 
         if (result.success) {
-          // ✅ ALIVE: Update stats
+          // ✅ ALIVE
           server.downloadSpeed = result.speedMbps;
           server.ping = result.pingMs.toInt();
           server.status = "active";
@@ -112,25 +107,21 @@ class ScannerLogic {
           double pingScore = max(0, 100 - (result.pingMs / 5));
           server.score = ((speedScore * 0.5) + (timeScore * 0.3) + (pingScore * 0.2)).round();
 
-          // We keep 'Alive' updates in a buffer to reduce API noise, 
-          // as updating speed isn't as urgent as deleting dead servers.
           print("   ✅ Alive. Speed: ${result.speedMbps} Mbps.");
         } else {
-          // ❌ DEAD: Delete immediately.
+          // ❌ DEAD
           if (server.id != null) {
              print("   🗑️ Failed to connect. Deleting VIP Immediately.");
-             await ApiService.deleteServer(server.id!); // ⚡ IMMEDIATE DELETE
+             await ApiService.deleteServer(server.id!);
           }
         }
       } catch (e) {
         print("   ⚠️ Error: $e");
       }
     }
-
-    
-
     print("💎 Guard Batch Complete.\n");
   }
+
   // =================================================================
   // ⛏️ MINER LOGIC (Ratio Grading)
   // =================================================================
@@ -145,7 +136,6 @@ class ScannerLogic {
       print("👉 [${i + 1}/${servers.length}] Testing ${server.ipAddress}...");
 
       try {
-        // 1. Config Parsing
         String? configStr = _prepareConfig(server);
         if (configStr == null) {
           if (server.id != null) deleteIds.add(server.id!);
@@ -153,7 +143,6 @@ class ScannerLogic {
           continue;
         }
 
-        // 2. Run Test
         TestResult result = await VpnManager.connectAndTest(
           configContent: configStr,
           ip: server.ipAddress,
@@ -173,9 +162,10 @@ class ScannerLogic {
       }
     }
 
-    // B. GRADING PHASE (Only if we have survivors)
+    // B. GRADING PHASE
     if (successfulTests.isNotEmpty) {
       print("📊 Grading ${successfulTests.length} survivors...");
+      // Logic changed here to remove HOME
       List<VpnServerModel> rankedServers = _applyForcedRatioGrading(successfulTests);
       
       print("📤 Sending Bulk Update...");
@@ -191,7 +181,7 @@ class ScannerLogic {
     print("✅ Batch Complete.\n");
   }
 
-  // --- MINER GRADING LOGIC (Weighted Score + Ratio) ---
+  // --- MINER GRADING LOGIC (UPDATED: NO HOME SERVER) ---
   static List<VpnServerModel> _applyForcedRatioGrading(Map<VpnServerModel, TestResult> resultsMap) {
     List<VpnServerModel> allServers = resultsMap.keys.toList();
     
@@ -199,35 +189,30 @@ class ScannerLogic {
     for (var s in allServers) {
       var result = resultsMap[s]!;
       
-      // Update Model Data
       s.downloadSpeed = result.speedMbps;
       s.ping = result.pingMs.toInt();
       s.status = "active";
       
-      // A. Speed Score (50% Weight) - Cap at 100 Mbps
+      // Speed (50%), Time (30%), Ping (20%)
       double speedScore = min(result.speedMbps.toDouble(), 100.0);
-
-      // B. Connect Time Score (30% Weight) - Instant=100, 10s=0
       double timeScore = max(0, 100 - (result.connectTimeMs / 100));
-
-      // C. Ping Score (20% Weight) - 0ms=100, 500ms=0
       double pingScore = max(0, 100 - (result.pingMs / 5));
 
-      // D. Final Weighted Score
       s.score = ((speedScore * 0.5) + (timeScore * 0.3) + (pingScore * 0.2)).round();
     }
 
-    // 2. SORT BY SCORE (Best First)
+    // 2. SORT BY SCORE (DESCENDING)
+    // This ensures Index 0 is the BEST server
     allServers.sort((a, b) => b.score.compareTo(a.score));
 
     // 3. CALCULATE CUTOFFS (Strict Ratio)
     int totalCount = allServers.length;
-    int homeCount = (totalCount * CAP_HOME_PERCENT).round();
+    
+    // Calculate Golden count based on very low percentage
     int goldenCount = (totalCount * CAP_GOLDEN_PERCENT).round();
 
-    // Ensure at least 1 Home/Golden if we have enough servers
-    if (totalCount >= 1 && homeCount == 0) homeCount = 1;
-    if (totalCount >= 3 && goldenCount == 0) goldenCount = 1;
+    // SAFETY: Ensure at least 1 Golden server if we have valid servers
+    if (totalCount >= 1 && goldenCount == 0) goldenCount = 1;
 
     // 4. ASSIGN TYPES
     List<VpnServerModel> resultList = [];
@@ -236,14 +221,11 @@ class ScannerLogic {
       var s = allServers[i];
       var res = resultsMap[s]!;
 
-      if (i < homeCount) {
-        s.serverType = "HOME";
-        s.isFree = false;
-        print("   🏆 ${s.ipAddress} -> HOME (Score: ${s.score} | ${res.speedMbps}Mbps)");
-      } else if (i < (homeCount + goldenCount)) {
+      // Top servers become GOLDEN, everyone else is FREE
+      if (i < goldenCount) {
         s.serverType = "GOLDEN";
         s.isFree = false;
-        print("   🥇 ${s.ipAddress} -> GOLDEN (Score: ${s.score})");
+        print("   🥇 ${s.ipAddress} -> GOLDEN (Score: ${s.score} | ${res.speedMbps}Mbps)");
       } else {
         s.serverType = "FREE";
         s.isFree = true;
@@ -255,16 +237,14 @@ class ScannerLogic {
     return resultList;
   }
 
-  // --- CONFIG PARSER (Your Exact Logic) ---
+  // --- CONFIG PARSER (UNCHANGED) ---
   static String? _prepareConfig(VpnServerModel server) {
     try {
-      // JSON Encode/Decode hack to fix Map types
       Map<String, dynamic> openvpnConfig = jsonDecode(jsonEncode(server.config));
       String patchedConfigFile = openvpnConfig['openvpnConfig'] ?? "";
 
       if (patchedConfigFile.isEmpty) return null;
 
-      // Cipher Patching
       if (patchedConfigFile.contains('cipher AES-128-CBC') && !patchedConfigFile.contains('data-ciphers')) {
         patchedConfigFile = patchedConfigFile.replaceAll(
           'cipher AES-128-CBC',
