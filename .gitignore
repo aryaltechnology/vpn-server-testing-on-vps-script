@@ -9,3 +9,6 @@ build/
 pubspec.lock
 .envdev
 .envprod
+.envpremiumtester
+temp.*
+vpn_auth.txt
